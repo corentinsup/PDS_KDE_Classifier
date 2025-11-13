@@ -4,30 +4,37 @@ import pandas as pd
 import time
 from tqdm import tqdm
 from sklearn.utils.class_weight import compute_class_weight
-from dataset import ModelTreesDataLoader
+from src.dataset import ModelTreesDataLoader
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from utils import *
+import torchvision.transforms as T
+from src.utils import *
 from models.model import KDE_cls_model
-from visualization import show_log_train, show_confusion_matrix
+from src.visualization import show_log_train, show_confusion_matrix
+from src.preprocess import preprocess
 from config.config import *
 
-
-def train_epoch(trainDataLoader, model, optimizer, criterion):
+def train_epoch(trainDataLoader, model, optimizer, criterion, device):
     loss_tot = 0
     num_samp_tot = 0
     mean_correct = []
     model.train()
     for _, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
-        grid, target = data['grid'], data['label']
-        grid, target = grid.to('cuda:0'), target.to('cuda:0')
+        grid, target = data['data'], data['label']
+        grid, target = grid.to(device), target.to(device)
+
+        # training step
         optimizer.zero_grad()
+        print(grid.shape)
         pred = model(grid)
+        
+        # loss computation
         loss = criterion(pred, target.long())
         loss_tot += loss.item()
         pred_choice = pred.data.max(1)[1]
         correct = pred_choice.eq(target.long().data).cpu().sum()
         mean_correct.append(correct.item() / float(grid.size()[0]))
+
+        # backpropagation
         loss.backward()
         optimizer.step()
         num_samp_tot += grid.shape[0]
@@ -78,58 +85,36 @@ def training(config, log_file, log_root):
     '''
     # check torch and if cuda is available
     print("torch version : " + torch.__version__)
-    print('device : ' + torch.cuda.get_device_name())
+    #print('device : ' + torch.cuda.get_device_name())
     if not torch.cuda.is_available():
         print("CUDA NOT AVAILABLE")
+        device = torch.device('cpu')
     else:
         print("Cuda available")
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device('cuda')
 
+    # load data
+    trainDataLoader, testDataLoader = load_data(config)
+    
+    # compute class weights (for unbalanced dataset)
+    if config.training.use_class_weights:
+        print('Calculating weights...')
+        targets = pd.read_csv(config.training.ROOT_DIR + config.training.TRAIN_FILES, delimiter=';')
+        targets = targets['label'].to_numpy()
 
-    # transformation
-    kde_transform = ToKDE(config.shared.grid_size, config.shared.kernel_size)
-    data_transform = transforms.Compose([
-        RandRotate(),
-        #RandScale(kernel_size),
-    ])
+        weights = compute_class_weight(
+            class_weight='balanced',
+            classes=np.unique(targets),
+            y=targets,
+        )
+        class_weights = torch.tensor(weights, dtype=torch.float, device=device)
+        print('Class weights:', class_weights)
+    else:
+        print('Skipping class weights (dataset assumed balanced)')
+        class_weights = None
 
-    # load datasets
-    trainingSet = ModelTreesDataLoader(config.training.TRAIN_FILES, config.training.ROOT_DIR, split='train', transform=data_transform, do_update_caching=config.training.do_update_caching, kde_transform=kde_transform, frac=config.training.frac_training)
-    testingSet = ModelTreesDataLoader(config.training.TEST_FILES, config.training.ROOT_DIR, split='test', transform=None, do_update_caching=config.training.do_update_caching, kde_transform=kde_transform, frac=config.training.frac_testing)
-
-    torch.manual_seed(42)
-    trainDataLoader = DataLoader(trainingSet, batch_size=config.shared.batch_size, shuffle=True, num_workers=config.shared.num_workers, pin_memory=True)
-    testDataLoader = DataLoader(testingSet, batch_size=config.shared.batch_size, shuffle=True, num_workers=config.shared.num_workers, pin_memory=True)
-
-    # get class weights:
-    print('Calculating weights...')
-    targets = pd.read_csv(config.training.ROOT_DIR + config.training.TRAIN_FILES, delimiter=';')
-    targets = targets['label'].to_numpy()
-    weights = compute_class_weight(
-        class_weight='balanced',
-        classes=np.unique(targets),
-        y=targets,
-    )
-
-    print('Weights : ', weights)
-    class_weights = torch.tensor(weights, dtype=torch.float, device=device)
-
-    # create model
-    conf = {
-        "num_class": config.shared.num_class,
-        "grid_dim": config.shared.grid_size
-    }
-    model = KDE_cls_model(conf).to(device)
-
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights, reduction='mean')
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=config.training.learning_rate,
-        betas=(0.9, 0.999),
-        eps=1e-08,
-        weight_decay=config.training.weight_decay
-    )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.3)
+    # initialize model
+    model, optimizer, scheduler, criterion = initialize_model(config, device, class_weights)
 
     # loop on epochs
     best_test_acc = 0
@@ -141,7 +126,7 @@ def training(config, log_file, log_root):
 
         # training
         print(f"Training on epoch {str(epoch+1)}/{str(config.training.num_epoch)}:")
-        train_acc, train_loss = train_epoch(trainDataLoader, model, optimizer, criterion)
+        train_acc, train_loss = train_epoch(trainDataLoader, model, optimizer, criterion, device)
         scheduler.step()
         line_log.append((train_acc, train_loss))
         print("Training acc : ", train_acc)
@@ -200,7 +185,104 @@ def training(config, log_file, log_root):
     print("BEST TEST CLASS ACC: ", best_test_class_acc)
     print("BEST TEST LOSS: ", best_test_loss)
 
-    return best_test_acc, best_test_class_acc
+def load_data(config):
+    '''
+    Load training and testing data
+    Inputs:
+    - config : configuration of the training (from config/config.py)
+    Outputs:
+    - trainDataLoader : DataLoader for training
+    - testDataLoader : DataLoader for testing
+    '''
+
+    # data transformations
+    kde_transform = ToKDE(config.shared.grid_size, config.shared.kernel_size, config.shared.num_repeat_kernel)
+    data_transform = T.Compose([
+        RandRotate(),
+        #RandScale(kernel_size),
+    ])
+
+    # preprocess the samples
+    if config.training.do_preprocess:
+        print("Preprocessing data...")
+        preprocess(
+            source_data=config.training.ROOT_DIR,
+            frac_train=0.8,
+            do_augment=False
+        )
+
+    # create dataloaders
+    train_dataset = ModelTreesDataLoader(
+        config.training.TRAIN_FILES,
+        config.training.ROOT_DIR,
+        split='train',
+        transform=data_transform,
+        do_update_caching=config.training.do_update_caching,
+        kde_transform=kde_transform,
+        frac=config.training.frac_training
+    )
+    test_dataset = ModelTreesDataLoader(
+        config.training.TEST_FILES,
+        config.training.ROOT_DIR,
+        split='test',
+        transform=None,
+        do_update_caching=config.training.do_update_caching,
+        kde_transform=kde_transform,
+        frac=config.training.frac_testing
+    )
+
+    trainDataLoader = DataLoader(train_dataset, batch_size=config.shared.batch_size, shuffle=True, num_workers=config.shared.num_workers, pin_memory=True)
+    testDataLoader = DataLoader(test_dataset, batch_size=config.shared.batch_size, shuffle=False, num_workers=config.shared.num_workers, pin_memory=True)
+
+    return trainDataLoader, testDataLoader
+
+def initialize_model(config, device, class_weights):
+    '''
+    Initialize the model, optimizer and loss function
+    Inputs:
+    - config : configuration of the training (from config/config.py)
+    - class_weights : weights for each class (for unbalanced dataset)
+    Outputs:
+    - model : the model to train
+    - optimizer : the optimizer
+    - criterion : the loss function
+    '''
+    conf = {
+        "num_class": config.shared.num_class,
+        "grid_dim": config.shared.grid_size
+    }
+    model = KDE_cls_model(conf).to(device)
+
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights, reduction='mean')
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.training.learning_rate,
+        betas=(0.9, 0.999),
+        eps=1e-08,
+        weight_decay=config.training.weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.3)
+
+    # load model if needed
+    if config.training.load_model:
+        checkpoint = torch.load(config.training.model_path, map_location=device)
+        old_weight = checkpoint['model_state_dict']['conv1.weight']
+
+        # duplicate the existing single channel to have wights for 2 channels
+        new_weight = old_weight.repeat(1, 2, 1, 1, 1) / 2.0  # averaged copy
+        checkpoint['model_state_dict']['conv1.weight'] = new_weight
+
+        # Load model and update its state_dict
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print("Model loaded from ", config.training.model_path)
+        if config.training.resume_optimizer:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print("Optimizer resumed from ", config.training.model_path)
+    else :
+        print("Training model from scratch")
+
+    return model, optimizer, scheduler, criterion
 
 
 def main(config):
@@ -219,7 +301,7 @@ def main(config):
 
     # Training
     start_time = time.time()
-    best_acc, best_class_acc = training(config, log_file, log_root)
+    training(config, log_file, log_root)
     end_time = time.time()
 
     # Plots of results

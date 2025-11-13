@@ -26,7 +26,10 @@ class TrainingConfig:
     do_preprocess: bool
     frac_training: float
     frac_testing: float
-    do_continue_from_existing_model: bool
+    load_model: bool
+    resume_optimizer: bool
+    model_path: str
+    use_class_weights: bool
     ROOT_DIR: str
     TRAIN_FILES: str
     TEST_FILES: str
@@ -42,7 +45,8 @@ class InferenceConfig:
     src_inf_results: str
     src_model: str
     inference_file: str
-
+    use_class_weighting: bool
+    save_predictions: bool
 
 @dataclass
 class FullConfig:
@@ -79,7 +83,7 @@ def merge_dicts(base: dict, overrides: dict) -> dict:
     return base
 
 
-def load_config(path: str = "config.yaml", overrides: List[str] = None) -> FullConfig:
+def load_config(path: str = "config.yaml", overrides: List[str] = []) -> FullConfig:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
 
@@ -90,18 +94,13 @@ def load_config(path: str = "config.yaml", overrides: List[str] = None) -> FullC
         override_dict = parse_overrides(overrides)
         raw_config = merge_dicts(raw_config, override_dict)
 
-    shared = raw_config.get("shared", {})
+    shared_dict = raw_config.get("shared", {})
 
-    # Merge shared into each section
-    def with_shared(section):
-        return {**shared, **raw_config.get(section, {})}
-
-    training = TrainingConfig(**with_shared("training"))
-    inference = InferenceConfig(**with_shared("inference"))
-    shared = SharedConfig(**shared)
+    training = TrainingConfig(**raw_config.get("training", {}))
+    inference = InferenceConfig(**raw_config.get("inference", {}))
+    shared = SharedConfig(**shared_dict)
 
     return FullConfig(shared=shared, training=training, inference=inference)
-
 
 def get_config_parser():
     parser = argparse.ArgumentParser()

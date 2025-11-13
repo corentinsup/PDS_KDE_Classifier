@@ -13,8 +13,8 @@ class RandRotate(object):
     """
     def __call__(self, sample):
         num_rot = random.randint(0, 3)
-        sample['grid'] = torch.rot90(sample['grid'], num_rot, (0, 1))
-
+        # Rotate around z axis
+        sample['data'] = torch.rot90(sample['data'], num_rot, (1, 2))
         return sample
 
 
@@ -50,11 +50,11 @@ class RandScale(object):
 
 
 class ToKDE(object):
-    """ Convert pointCloud to KDE vector
+    """ Convert pointCloud into a 2-channel KDE voxel grid
         Input:
-            Nx3 array where N is variable: the pointcloud
+            2 arrays of Nx3 where N is variable: the pointcloud
         Return:
-            GxGxG array: the KDE grid
+            2xGxGxG tensor: the KDE grid
     """
 
     def __init__(self, grid_size, kernel_size, num_repeat):
@@ -63,22 +63,29 @@ class ToKDE(object):
         self.num_repeat = num_repeat
 
     def __call__(self, sample):
-        pointCloud = sample['data']
-        pointCloud = pcNormalize(pointCloud)
+        # all points
+        pointCloud_all = pcNormalize(sample['data_all'])
+        
+        # cluster points
+        pointCloud_cluster = pcNormalize(sample['data_cluster'])
 
         # create grid:
-        grid = pcToGrid(pointCloud, self.grid_size)
+        grid_all = pcToGrid(pointCloud_all, self.grid_size)
+        grid_cluster = pcToGrid(pointCloud_cluster, self.grid_size)
 
         # apply KDE:
-        for rep in range(self.num_repeat):
-            grid = applyKDE(grid, self.grid_size, self.kernel_size)
+        for _ in range(self.num_repeat):
+            grid_all = applyKDE(grid_all, self.grid_size, self.kernel_size)
+            grid_cluster = applyKDE(grid_cluster, self.grid_size, self.kernel_size)
+
+        # stack channels to have shape 2xGxGxG
+        grid = np.stack((grid_all, grid_cluster), axis=0)
 
         # to tensor
-        grid = torch.from_numpy(grid)
-        label = torch.from_numpy(np.asarray(sample['label']))
+        grid = torch.tensor(grid, dtype=torch.float32)
+        label = torch.tensor(sample['label']).long()
 
-        return {'data': grid,
-                'label': label}
+        return {'data': grid, 'label': label}
 
 
 def pcToGrid(data, grid_size):
@@ -153,3 +160,26 @@ def pcNormalize(data):
     pc = pc / m if m > 0 else 0
     normal_data = pc
     return normal_data
+
+def read_pcd_with_fields(filename) : 
+    """ Read a PCD file and return its data and fields
+        Input:
+            filename: path to the PCD file
+        Output:
+            data: NxC array where N is number of points and C number of fields
+            fields: list of field names
+    """
+    with open(filename, 'r') as file:
+        lines = file.readlines()
+    
+    # Find the line that starts with "DATA"
+    idx_data = [i for i, line in enumerate(lines) if line.startswith('DATA')][0] + 1
+    header = lines[:idx_data]
+    data = np.loadtxt(lines[idx_data:], dtype=float)
+
+    # Extract fields from header
+    fields_line = [line for line in header if line.startswith('FIELDS')][0]
+    fields = fields_line.strip().split()[1:]  # Skip the 'FIELDS' keyword
+
+    return data, fields
+    

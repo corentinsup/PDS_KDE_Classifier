@@ -5,58 +5,77 @@ import random
 
 
 def preprocess(source_data, frac_train=.8, do_augment=False):
-    remove_with_suffixe(source_data + '/Garbage', '_rot')
-    remove_with_suffixe(source_data + '/Multi', '_rot')
-    remove_with_suffixe(source_data + '/Single', '_rot')
+    remove_with_suffixe(os.path.join(source_data, 'Garbage'), '_rot')
+    remove_with_suffixe(os.path.join(source_data, 'Multi'), '_rot')
+    remove_with_suffixe(os.path.join(source_data, 'Single'), '_rot')
 
-    # Create file with different labels:
-    with open(f'{source_data}/modeltrees_shape_names.txt', 'w') as f:
+    # create label file
+    with open(os.path.join(source_data, 'modeltrees_shape_names.txt'), 'w') as f:
         f.write('garbage\nmultiple\nsingle')
 
-    # Create references files:
+    # create references files:
     num_training_samples = 0
     num_testing_samples = 0
     df_training_samples = pd.DataFrame(columns=['data', 'label'])
     df_testing_samples = pd.DataFrame(columns=['data', 'label'])
-    dic_temp = {}
+    
+    label_map = {
+        'Garbage': 0,
+        'Multi': 1,
+        'Single': 2
+    }
+
+    # count and partition each class
+    class_counts = {}
     for folder in os.listdir(source_data):
-        if os.path.isdir(source_data + "\\" + folder):
-            label = 0
-            if folder == 'Garbage':
-                label = 0
-            elif folder == 'Multi':
-                label = 1
-            elif folder == 'Single':
-                label = 2
+        folder_path = os.path.join(source_data, folder)
+        if not os.path.isdir(folder_path):
+            continue
+        if folder not in label_map:
+            print(f"Skipping unexpected folder: {folder}")
+            continue
 
-            # partition lists
-            num_files = len(os.listdir(source_data + "/" + folder))
-            num_train = int(num_files * frac_train)
-            num_training_samples += num_train
-            num_testing_samples += num_files - num_train
-            data = os.listdir(source_data + "/" + folder)
-            random.shuffle(data)
+        label = label_map[folder]
+        data = os.listdir(folder_path)
+        data = [f for f in data if not f.startswith('.')]  # skip hidden files (.DS_Store etc.)
 
-            # training data
-            list_train = data[0:num_train]
-            list_train = [folder + '/' + x for x in list_train]
-            list_train_label = [label] * len(list_train)
+        num_files = len(data)
+        class_counts[folder] = num_files
 
-            # testing data
-            list_test = data[num_train::]
-            list_test = [folder + '/' + x for x in list_test]
-            list_test_label = [label] * len(list_test)
+        if num_files == 0:
+            print(f"No files found in {folder_path}")
+            continue
 
-            # data to pandas
-            dic_temp['data'] = list_train
-            dic_temp['label'] = list_train_label
-            df_temp = pd.DataFrame(dic_temp, columns=['data', 'label'])
-            df_training_samples = pd.concat([df_training_samples, df_temp], ignore_index=True)
-            dic_temp['data'] = list_test
-            dic_temp['label'] = list_test_label
-            df_temp = pd.DataFrame(dic_temp, columns=['data', 'label'])
-            df_testing_samples = pd.concat([df_testing_samples, df_temp], ignore_index=True)
+        random.shuffle(data)
+        num_train = int(num_files * frac_train)
+        num_training_samples += num_train
+        num_testing_samples += num_files - num_train
 
+        # training data
+        list_train = data[:num_train]
+        list_train = [os.path.join(folder, x) for x in list_train]
+        list_train_label = [label] * len(list_train)
+
+        # testing data
+        list_test = data[num_train:]
+        list_test = [os.path.join(folder, x) for x in list_test]
+        list_test_label = [label] * len(list_test)
+
+        # append to dataframes
+        df_training_samples = pd.concat(
+            [df_training_samples, pd.DataFrame({'data': list_train, 'label': list_train_label})],
+            ignore_index=True
+        )
+        df_testing_samples = pd.concat(
+            [df_testing_samples, pd.DataFrame({'data': list_test, 'label': list_test_label})],
+            ignore_index=True
+        )
+
+    print("Number of samples per class:", class_counts)
+    print(f"Final partition for training : {num_training_samples}")
+    print(f"Final partition for testing : {num_testing_samples}")
+
+    # optionally perform data augmentation
     if do_augment:
         print("Beginning data augmentation..")
         o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)   # Remove Open3D warnings
@@ -65,10 +84,9 @@ def preprocess(source_data, frac_train=.8, do_augment=False):
         df_training_samples = data_augmentation('Single', df_training_samples, 90, repeat)
         df_training_samples = data_augmentation('Garbage', df_training_samples, 90, repeat)
 
-    print(f"Final partition for training : {num_training_samples}")
-    print(f"Final partition for testing : {num_testing_samples}")
-    df_training_samples.to_csv(f'{source_data}/modeltrees_train.csv', ';', index=False)
-    df_testing_samples.to_csv(f'{source_data}/modeltrees_test.csv', ';', index=False)
+    # save csv files
+    df_training_samples.to_csv(os.path.join(source_data, 'modeltrees_train.csv'), sep=';', index=False)
+    df_testing_samples.to_csv(os.path.join(source_data, 'modeltrees_test.csv'), sep=';', index=False)
 
 
 def data_augmentation(src, df_training_samples, angle, repeat):

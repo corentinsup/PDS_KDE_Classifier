@@ -11,21 +11,38 @@ training:
   num_epoch: 5
   learning_rate: 0.001
   weight_decay: 0.0001
-  do_update_caching: true
+  # Data
+  do_update_caching: false
   do_preprocess: false
   frac_training: 0.01
   frac_testing: 0.01
-  do_continue_from_existing_model: false
-  ROOT_DIR: 'data/modeltrees_12000/'
+  
+  # Model loading / saving
+  load_model: false
+  resume_optimizer: false 
+  model_path: "./models/pretrained_single_channel/model_KDE.tar"
+
+  # Class weighting 
+  use_class_weights: false             # set true if training dataset is imbalanced
+
+  # Dataset paths
+  ROOT_DIR: 'data/Val_arpette/'
   TRAIN_FILES: 'modeltrees_train.csv'
   TEST_FILES: 'modeltrees_test.csv'
 
 inference:
   do_preprocess: true
   verbose: false
-  chunk_size: 30 # number of files processed at the time (0 = all of them)
+  chunk_size: 30                          # number of files processed at the time (0 = all of them)
+
+  # Paths
   src_inf_root: "./inference/"
   src_inf_data: "test"
   src_inf_results: "test_results"
-  src_model: "./models/pretrained/model_KDE.tar"
+  src_model: "./models/model_KDE.tar"
   inference_file: "modeltrees_inference.csv"
+
+  # Optional processing flags
+  use_class_weighting: false              # if you want inference loss weighting
+  save_predictions: true
+

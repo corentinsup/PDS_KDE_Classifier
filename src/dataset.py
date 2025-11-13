@@ -9,6 +9,7 @@ import open3d as o3d
 import concurrent.futures
 from functools import partial
 from tqdm import tqdm
+from src.utils import read_pcd_with_fields
 
 
 class ModelTreesDataLoader(Dataset):
@@ -54,20 +55,21 @@ class ModelTreesDataLoader(Dataset):
             # Update self.data and csv files for data and failed_data
             df_failed_data = self.data.iloc[[x for x,_ in self.num_fails]]
             self.data.drop(labels=[x for x,_ in self.num_fails], axis=0, inplace=True)
+
+            # creation of results directory if not existing
+            if not os.path.exists(os.path.join(root_dir, result_dir)):
+                os.mkdir(os.path.join(root_dir, result_dir))
+
+            # save failed data and updated data csv files
             df_failed_data.to_csv(os.path.join(root_dir, result_dir, "failed_data.csv"), sep=';', index=True, index_label="Index")
             self.data.to_csv(os.path.join(root_dir, csvfile), sep=';', index=False)
 
         # shuffle the dataset
         self.data = self.data.sample(frac=frac, random_state=42).reset_index(drop=True)
         lst_file_names = [os.path.basename(x) + '.pickle' for x in self.data.data.values]
-        # print(lst_file_names)
+      
         self.data.data = lst_file_names
-        # print(self.data.head())
-        # quit()
-
-        # for idx, samp in tqdm(self.data.iterrows(), total=len(self.data), smoothing=.9, desc="loading file names"):
-        #     self.data.iloc[idx, 0] = os.path.join('data', os.path.basename(samp['data']) + '.pickle')
-
+    
     def __len__(self):
         return len(self.data)
 
@@ -80,7 +82,7 @@ class ModelTreesDataLoader(Dataset):
         with open(self.pickle_dir + filename, 'rb') as file:
             sample = pickle.load(file)
 
-        sample = {'grid': sample['data'], 'label': sample['label'], 'filename': filename}
+        sample['label'] = sample.get('label', self.data.iloc[idx, 1])
 
         if self.transform:
             sample = self.transform(sample)
@@ -92,21 +94,37 @@ class ModelTreesDataLoader(Dataset):
             shutil.rmtree(self.pickle_dir)
 
     def mapToKDE(self, root_dir, pickle_dir, kde_transform, idx):
+        pcd_name = ""
         try:
             samp = self.data.iloc[idx]
             pcd_name = os.path.join(root_dir, samp['data'])
-            pcd = o3d.io.read_point_cloud(pcd_name, format='pcd')
-            pointCloud = np.asarray(pcd.points)
+
+            # read point cloud with all the fields
+            data, fields = read_pcd_with_fields(pcd_name)
+            idx_inCluster = fields.index('inCluster')
+            idx_x, idx_y, idx_z = fields.index('x'), fields.index('y'), fields.index('z')
+            xyz_indices = [idx_x, idx_y, idx_z]
+            
+            # separate cluster points
+            cluster_points = data[data[:, idx_inCluster] == 1][:, xyz_indices]
+            all_points = data[:, xyz_indices]
+    
             label = np.asarray(samp['label'])
-            sample = {'data': pointCloud, 'label': label}
+            sample = {
+            'data_cluster': cluster_points,
+            'data_all': all_points,
+            'label': label
+            }
+            
+            # apply KDE transform
             sample = kde_transform(sample)
 
             with open(os.path.join(pickle_dir, os.path.basename(samp['data']) + '.pickle'), 'wb') as file:
                 pickle.dump(sample, file)
             return ""
         except Exception as e:
-            return pcd_name
-        
+            print(f"Failed to process {pcd_name if pcd_name else idx}: {e}")
+            return pcd_name if pcd_name else str(idx)      
 
 
 def main():
