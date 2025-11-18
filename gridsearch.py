@@ -5,7 +5,7 @@ import pandas as pd
 import copy
 from train import training
 from src.visualization import show_log_train, show_grid_search
-from config import FullConfig, SharedConfig, TrainingConfig
+from config.config import SharedConfig, TrainingConfig, FullConfig
 
 def main():
     # grid-search parameters
@@ -18,12 +18,15 @@ def main():
         num_epoch=1,
         learning_rate=1e-3,
         weight_decay=1e-4,
-        do_update_caching=True,
+        do_update_caching=False,
         do_preprocess=False,
         frac_training=0.01,
         frac_testing=0.01,
-        do_continue_from_existing_model=False,
-        ROOT_DIR='data/modeltrees_12000/',
+        resume_optimizer=False,
+        load_model=False,
+        model_path='',
+        use_class_weights=False,
+        ROOT_DIR='data/Val_arpette/',
         TRAIN_FILES='modeltrees_train.csv',
         TEST_FILES='modeltrees_test.csv'
     )
@@ -58,12 +61,12 @@ def main():
             
             # Training
             start_time = time.time()
-            best_acc, best_class_acc = training(full_config, log_file, log_file_root)
+            training(full_config, log_file, log_file_root)
             end_time = time.time()
             
-            # saving results in dataframe
+            '''# saving results in dataframe
             df_res.loc[len(df_res)] = [kernel_size, repeat_kernel, best_acc, best_class_acc]
-
+'''
             # show training logs
             show_log_train(log_file, log_file_root, do_save=True, do_show=False)
 
@@ -83,7 +86,7 @@ def main():
     print("\n==============\n")
     print(f"TIME TO GRID SEARCH: {n_hours}:{n_min}:{n_sec}")
 
-    # save results of grid search
+    '''# save results of grid search
     df_res.to_csv(log_gridsearch_root + 'log_grid_search.csv', sep=';', index=False)
     show_grid_search(
         log_gridsearch_root,
@@ -98,7 +101,7 @@ def main():
         'Average Accuracy',
         do_save=True,
         do_show=False,
-    )
+    )'''
 
 
 if __name__ == '__main__':

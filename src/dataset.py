@@ -5,12 +5,46 @@ import torch
 import pickle
 import pandas as pd
 from torch.utils.data import Dataset
-import open3d as o3d
+import multiprocessing
 import concurrent.futures
-from functools import partial
 from tqdm import tqdm
 from src.utils import read_pcd_with_fields
 
+def mapToKDE(args):
+    root_dir, pickle_dir, kde_transform, row = args
+    pcd_name = os.path.join(root_dir, row["data"])
+
+    try:
+        #print(f"[Worker PID {os.getpid()}] Processing: {pcd_name} → {save_path}")
+        # Load .pcd file
+        data, fields = read_pcd_with_fields(pcd_name)
+        idx_inCluster = fields.index("inCluster")
+        xyz_indices = [fields.index("x"), fields.index("y"), fields.index("z")]
+
+        # Separate cluster points
+        cluster_points = data[data[:, idx_inCluster] == 1][:, xyz_indices]
+        all_points = data[:, xyz_indices]
+
+        label = np.asarray(row["label"])
+        sample = {
+            "data_cluster": cluster_points,
+            "data_all": all_points,
+            "label": label,
+        }
+
+        # Apply KDE transform
+        sample = kde_transform(sample)
+
+        # Save pickle
+        save_path = os.path.join(pickle_dir, os.path.basename(row["data"]) + ".pickle")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "wb") as f:
+            pickle.dump(sample, f)
+
+        return ""
+        print(f"[Worker PID {os.getpid()}] Finished: {pcd_name}")
+    except Exception as e:
+        return f"{pcd_name}: {e}"
 
 class ModelTreesDataLoader(Dataset):
     def __init__(self, csvfile, root_dir, split, transform, do_update_caching, kde_transform, frac=1.0, result_dir='results', verbose=True):
@@ -23,52 +57,75 @@ class ModelTreesDataLoader(Dataset):
                 :param frac (float, optional): fraction of the data loaded
                     on a sample.
         """
-        # create code for caching grids
+        
         self.transform = transform
-        self.root_dir = root_dir
-        pickle_dir = root_dir + 'tmp_grids_' + split + "/"
-        self.pickle_dir = pickle_dir
-        if do_update_caching:
+        self.root_dir = os.path.abspath(root_dir)
+        self.split = split
+        self.kde_transform = kde_transform
+
+        # create code for caching grids
+        self.pickle_dir = os.path.join(self.root_dir, 'tmp_grids_' + split + "/")
+        '''if do_update_caching:
             self.clean_temp()
-            os.mkdir(pickle_dir)
-            if split != 'inference':
-                os.mkdir(pickle_dir + "Garbage")
-                os.mkdir(pickle_dir + "Multi")
-                os.mkdir(pickle_dir + "Single")
+            os.makedirs(self.pickle_dir, exist_ok=True)
+
+            if split != "inference":
+                for sub in ['Garbage','Multi', 'Single']:
+                    os.makedirs(os.path.join(self.pickle_dir, sub), exist_ok=True)
             else:
-                os.mkdir(pickle_dir + "data")
-        self.data = pd.read_csv(root_dir + csvfile, delimiter=';')
+                os.makedirs(self.pickle_dir , exist_ok=True)'''
+
+        # Load csv file
+        self.data = pd.read_csv(os.path.join(root_dir, csvfile), delimiter=';')
 
         if verbose:
             print('Loading ', split, ' set...')
+        
+        # cache building
         self.num_fails = []
         if do_update_caching:
-            # creating grids using multiprocess
+            self.clean_temp()
+            os.makedirs(self.pickle_dir, exist_ok=True)
+            args = [
+                (self.root_dir, self.pickle_dir, self.kde_transform, row)
+                for _, row in self.data.iterrows()
+            ]
+            multiprocessing.set_start_method('spawn', force=True)
             with concurrent.futures.ProcessPoolExecutor() as executor:
-                partialmapToKDE = partial(self.mapToKDE, root_dir, pickle_dir, kde_transform)
-                args = range(len(self.data))
-                results = list(tqdm(executor.map(partialmapToKDE, args), total=len(self.data), smoothing=.9, desc="Creating caching files", disable=not verbose))
+                results = list(
+                    tqdm(
+                        executor.map(mapToKDE, args),
+                        total=len(args),
+                        smoothing=0.9,
+                        desc="Creating caching files",
+                        disable=not verbose,
+                    )
+                )
+            # Collect failed files
             self.num_fails = [(idx, x) for (idx, x) in enumerate(results) if x != ""]
             if verbose:
                 print(f"Number of failing files: {len(self.num_fails)}")
 
-            # Update self.data and csv files for data and failed_data
-            df_failed_data = self.data.iloc[[x for x,_ in self.num_fails]]
-            self.data.drop(labels=[x for x,_ in self.num_fails], axis=0, inplace=True)
+            # Save failed data
+            if self.num_fails:
+                failed_indices = [x for x, _ in self.num_fails]
+                df_failed = self.data.iloc[failed_indices]
+                self.data.drop(index=failed_indices, inplace=True)
 
-            # creation of results directory if not existing
-            if not os.path.exists(os.path.join(root_dir, result_dir)):
-                os.mkdir(os.path.join(root_dir, result_dir))
-
-            # save failed data and updated data csv files
-            df_failed_data.to_csv(os.path.join(root_dir, result_dir, "failed_data.csv"), sep=';', index=True, index_label="Index")
-            self.data.to_csv(os.path.join(root_dir, csvfile), sep=';', index=False)
+                os.makedirs(os.path.join(self.root_dir, result_dir), exist_ok=True)
+                df_failed.to_csv(
+                    os.path.join(self.root_dir, result_dir, "failed_data.csv"),
+                    sep=";",
+                    index=True,
+                    index_label="Index",
+                )
+                # Save updated data CSV
+                self.data.to_csv(os.path.join(root_dir, csvfile), sep=";", index=False)
 
         # shuffle the dataset
         self.data = self.data.sample(frac=frac, random_state=42).reset_index(drop=True)
-        lst_file_names = [os.path.basename(x) + '.pickle' for x in self.data.data.values]
+        self.data["data"] = [os.path.basename(str(x)) + ".pickle" for x in self.data["data"].values]
       
-        self.data.data = lst_file_names
     
     def __len__(self):
         return len(self.data)
@@ -77,12 +134,14 @@ class ModelTreesDataLoader(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        filename = self.data.iloc[idx, 0]
+        filename = self.data.iloc[idx]["data"]
+        label = self.data.iloc[idx]["label"]
 
-        with open(self.pickle_dir + filename, 'rb') as file:
+        pickle_path = os.path.join(self.pickle_dir, filename)
+        with open(pickle_path, "rb") as file:
             sample = pickle.load(file)
 
-        sample['label'] = sample.get('label', self.data.iloc[idx, 1])
+        sample["label"] = sample.get("label", label)
 
         if self.transform:
             sample = self.transform(sample)
@@ -92,40 +151,6 @@ class ModelTreesDataLoader(Dataset):
     def clean_temp(self):
         if os.path.exists(self.pickle_dir):
             shutil.rmtree(self.pickle_dir)
-
-    def mapToKDE(self, root_dir, pickle_dir, kde_transform, idx):
-        pcd_name = ""
-        try:
-            samp = self.data.iloc[idx]
-            pcd_name = os.path.join(root_dir, samp['data'])
-
-            # read point cloud with all the fields
-            data, fields = read_pcd_with_fields(pcd_name)
-            idx_inCluster = fields.index('inCluster')
-            idx_x, idx_y, idx_z = fields.index('x'), fields.index('y'), fields.index('z')
-            xyz_indices = [idx_x, idx_y, idx_z]
-            
-            # separate cluster points
-            cluster_points = data[data[:, idx_inCluster] == 1][:, xyz_indices]
-            all_points = data[:, xyz_indices]
-    
-            label = np.asarray(samp['label'])
-            sample = {
-            'data_cluster': cluster_points,
-            'data_all': all_points,
-            'label': label
-            }
-            
-            # apply KDE transform
-            sample = kde_transform(sample)
-
-            with open(os.path.join(pickle_dir, os.path.basename(samp['data']) + '.pickle'), 'wb') as file:
-                pickle.dump(sample, file)
-            return ""
-        except Exception as e:
-            print(f"Failed to process {pcd_name if pcd_name else idx}: {e}")
-            return pcd_name if pcd_name else str(idx)      
-
 
 def main():
     print("not the right way to use me Pal")

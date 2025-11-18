@@ -24,7 +24,6 @@ def train_epoch(trainDataLoader, model, optimizer, criterion, device):
 
         # training step
         optimizer.zero_grad()
-        print(grid.shape)
         pred = model(grid)
         
         # loss computation
@@ -43,37 +42,52 @@ def train_epoch(trainDataLoader, model, optimizer, criterion, device):
     return train_acc, train_loss
 
 
-def test_epoch(testDataLoader, model, criterion):
-    loss_tot = 0
-    mean_correct = []
-    pred_tot = []
-    target_tot = []
-    class_acc = np.zeros((config.shared.num_class, 3))
-    num_samp_tot = 0
-    for batch_id, data in tqdm(enumerate(testDataLoader, 0), total=len(testDataLoader), smoothing=0.9):
-        grid, target = data['grid'], data['label']
-        grid, target = grid.cuda(), target.cuda()
-        pred = model(grid)
-        loss = criterion(pred, target.long())
-        loss_tot += loss.item()
-        pred_choice = pred.data.max(1)[1]
-        for cat in np.unique(target.cpu()):
-            classacc = pred_choice[target == cat].eq(target[target == cat].long().data).cpu().sum()
-            class_acc[cat, 0] += classacc.item()/float(grid[target == cat].size()[0])
-            class_acc[cat, 1] += 1
-        correct = pred_choice.eq(target.long().data).cpu().sum()
-        mean_correct.append(correct.item() / float(grid.size()[0]))
-        num_samp_tot += grid.size()[0]
-        pred_tot.append(pred_choice.tolist())
-        target_tot.append(target.tolist())
-    class_acc[:, 2] = class_acc[:, 0] / class_acc[:, 1]
-    class_acc = np.mean(class_acc[:, 2])
-    test_acc = np.mean(mean_correct)
-    test_loss = loss_tot / num_samp_tot
-    pred_tot = [item for sublist in pred_tot for item in sublist]
-    target_tot = [item for sublist in target_tot for item in sublist]
-    return test_acc, test_loss, class_acc, pred_tot, target_tot
+def test_epoch(testDataLoader, model, criterion, device, config):
+    # set model to evaluation mode
+    model.eval()
 
+    # metrics initialization
+    loss_tot = 0.0
+    total_samples = 0
+    correct_samples = 0
+    class_correct = np.zeros(config.shared.num_class)
+    class_total = np.zeros(config.shared.num_class)
+    
+    pred_all = []
+    target_all = []
+
+    with torch.no_grad():
+        for batch in tqdm(testDataLoader, total=len(testDataLoader), smoothing=0.9):
+            # move data to device
+            inputs = batch['data'].to(device)
+            targets = batch['label'].to(device)
+
+            # forward pass
+            outputs = model(inputs)
+            loss = criterion(outputs, targets.long())
+            loss_tot += loss.item() * inputs.size(0)
+            total_samples += inputs.size(0)
+
+            # predictions
+            _, preds = torch.max(outputs, 1)
+            correct_samples += torch.sum(preds == targets).item()
+
+            # per class accuracy
+            for cls in range(config.shared.num_class):
+                cls_mask = (targets == cls)
+                class_total[cls] += cls_mask.sum().item()
+                class_correct[cls] += (preds[cls_mask] == cls).sum().item()
+
+            # store predictions
+            pred_all.extend(preds.cpu().tolist())
+            target_all.extend(targets.cpu().tolist())
+        
+    # compute final accuracies and losses
+    test_loss = loss_tot / total_samples
+    test_acc = correct_samples / total_samples
+    class_acc = np.mean(class_correct/np.maximum(class_total, 1))  # avoid division by zero
+
+    return test_acc, test_loss, class_acc, pred_all, target_all
 
 def training(config, log_file, log_root):
     '''
@@ -85,7 +99,6 @@ def training(config, log_file, log_root):
     '''
     # check torch and if cuda is available
     print("torch version : " + torch.__version__)
-    #print('device : ' + torch.cuda.get_device_name())
     if not torch.cuda.is_available():
         print("CUDA NOT AVAILABLE")
         device = torch.device('cpu')
@@ -134,8 +147,7 @@ def training(config, log_file, log_root):
         print("Testing...")
 
         # testing
-        with torch.no_grad():
-            test_acc, test_loss, class_acc, preds_test, targets_test = test_epoch(testDataLoader, model, criterion)
+        test_acc, test_loss, class_acc, preds, targets = test_epoch(testDataLoader, model, criterion, device, config)
         line_log.append((test_acc, class_acc, test_loss))
         line_log = [el for sublists in line_log for el in sublists]     # flatten list
         print("Testing acc : ", test_acc)
@@ -161,17 +173,17 @@ def training(config, log_file, log_root):
                 'train_loss': train_loss,
             }, log_root + "/model_KDE.tar")
 
-            # save preds and create confusion matrix
+            '''# save preds and create confusion matrix
             conf_mat_data = {
-                'pred': preds_test,
-                'target': targets_test,
+                'pred': preds,
+                'target': targets,
             }
             df_conf_mat_data = pd.DataFrame(conf_mat_data)
             df_conf_mat_data.to_csv(log_root + '/confmat.csv', index=False, sep=';')
             
             with open(os.path.join(config.training.ROOT_DIR, 'modeltrees_shape_names.txt'), 'r') as f:
                 SAMPLE_LABELS = f.read().splitlines()
-            show_confusion_matrix(log_root, preds_test, targets_test, SAMPLE_LABELS, epoch=best_epoch)
+            show_confusion_matrix(log_root, preds, targets, SAMPLE_LABELS, epoch=best_epoch)'''
 
         # update logs
         with open(log_file, 'a', newline='') as file:

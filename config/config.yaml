@@ -8,9 +8,10 @@ shared:
   grid_size: 64
 
 training:
-  num_epoch: 5
+  num_epoch: 50
   learning_rate: 0.001
   weight_decay: 0.0001
+
   # Data
   do_update_caching: false
   do_preprocess: false
@@ -18,15 +19,15 @@ training:
   frac_testing: 0.01
   
   # Model loading / saving
-  load_model: false
+  load_model: true
   resume_optimizer: false 
-  model_path: "./models/pretrained_single_channel/model_KDE.tar"
+  model_path: "./models/pretrained/model_KDE.tar"
 
   # Class weighting 
   use_class_weights: false             # set true if training dataset is imbalanced
 
   # Dataset paths
-  ROOT_DIR: 'data/Val_arpette/'
+  ROOT_DIR: './data/Val_arpette/'
   TRAIN_FILES: 'modeltrees_train.csv'
   TEST_FILES: 'modeltrees_test.csv'
 

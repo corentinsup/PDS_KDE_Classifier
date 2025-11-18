@@ -1,0 +1,2 @@
+train_acc;train_loss;test_acc;test_class_acc;test_loss
+0.625;0.16980464641864484;1.0;0.3333333333333333;1.0784488916397095
