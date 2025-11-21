@@ -1,22 +1,22 @@
 # config.yaml
 shared:
   batch_size: 12
-  num_workers: 8
+  num_workers: 12
   num_class: 3
-  kernel_size: 1
+  kernel_size: 2
   num_repeat_kernel: 1
   grid_size: 64
 
 training:
-  num_epoch: 50
+  num_epoch: 30
   learning_rate: 0.001
   weight_decay: 0.0001
 
   # Data
   do_update_caching: false
   do_preprocess: false
-  frac_training: 0.01
-  frac_testing: 0.01
+  frac_training: 1
+  frac_testing: 1
   
   # Model loading / saving
   load_model: true

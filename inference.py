@@ -6,7 +6,7 @@ from tqdm import tqdm
 from src.dataset import ModelTreesDataLoader
 from torch.utils.data import DataLoader
 from src.utils import *
-from models.model import KDE_cls_model
+from models.model_og import KDE_cls_model
 from time import time
 from packaging import version
 from config.config import *
@@ -193,17 +193,18 @@ def inference(config, verbose=True):
 
 def main(config):
     # measure time
-    start = time()
+    start = time.time()
     # start inference
     inference_by_chunk(config)
+    end_time = time.time()
 
     # print duration
-    duration = time() - start
-    hours = int(duration/3600)
-    mins = int((duration - 3600 * hours)/60)
-    secs = int((duration - 3600 * hours - 60 * mins))
-    print(duration)
-    print(f"Time to process inference: {hours}:{mins}:{secs}")
+    duration = end_time - start
+    n_hours = int(delta_time / 3600)
+    n_min = int((delta_time % 3600) / 60)
+    n_sec = int(delta_time - n_hours * 3600 - n_min * 60)
+    print("\n==============\n")
+    print(f"TIME FOR IMFERENCE: {n_hours}:{n_min}:{n_sec}")
 
 
 if __name__ == "__main__":

@@ -63,11 +63,13 @@ class ToKDE(object):
         self.num_repeat = num_repeat
 
     def __call__(self, sample):
-        # all points
-        pointCloud_all = pcNormalize(sample['data_all'])
-        
-        # cluster points
-        pointCloud_cluster = pcNormalize(sample['data_cluster'])
+       # Normalize everything together to keep channels aligned
+        all_points = np.concatenate([sample['data_all'], sample['data_cluster']], axis=0)
+        all_points_normalized = pcNormalize(all_points)
+
+        # now split back
+        pointCloud_all = all_points_normalized[:len(sample['data_all'])]
+        pointCloud_cluster = all_points_normalized[len(sample['data_all']):]
 
         # create grid:
         grid_all = pcToGrid(pointCloud_all, self.grid_size)
@@ -77,6 +79,10 @@ class ToKDE(object):
         for _ in range(self.num_repeat):
             grid_all = applyKDE(grid_all, self.grid_size, self.kernel_size)
             grid_cluster = applyKDE(grid_cluster, self.grid_size, self.kernel_size)
+
+        # normalize grids
+        grid_all = (grid_all - grid_all.mean()) / (grid_all.std() + 1e-5)
+        grid_cluster = (grid_cluster - grid_cluster.mean()) / (grid_cluster.std() + 1e-5)
 
         # stack channels to have shape 2xGxGxG
         grid = np.stack((grid_all, grid_cluster), axis=0)
@@ -102,6 +108,7 @@ def pcToGrid(data, grid_size):
         for idx, pos in enumerate(point):
             point[idx] = int((pos + 1)/2*grid_size)
         point = point.astype(int)
+        point = np.clip(point, 0, grid_size - 1)
 
         # add point to grid
         grid[point[0], point[1], point[2]] = 1

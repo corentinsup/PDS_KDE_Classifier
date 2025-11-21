@@ -8,19 +8,21 @@ from src.dataset import ModelTreesDataLoader
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
 from src.utils import *
-from models.model import KDE_cls_model
+from models.model_og import KDE_cls_model
 from src.visualization import show_log_train, show_confusion_matrix
 from src.preprocess import preprocess
 from config.config import *
+from torchsummary import summary
 
 def train_epoch(trainDataLoader, model, optimizer, criterion, device):
-    loss_tot = 0
-    num_samp_tot = 0
-    mean_correct = []
+    running_loss = 0.0
+    running_corrects = 0
+    total_samples = 0
     model.train()
+    
     for _, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
         grid, target = data['data'], data['label']
-        grid, target = grid.to(device), target.to(device)
+        grid, target = grid.to(device), target.to(device).long()
 
         # training step
         optimizer.zero_grad()
@@ -28,17 +30,18 @@ def train_epoch(trainDataLoader, model, optimizer, criterion, device):
         
         # loss computation
         loss = criterion(pred, target.long())
-        loss_tot += loss.item()
-        pred_choice = pred.data.max(1)[1]
-        correct = pred_choice.eq(target.long().data).cpu().sum()
-        mean_correct.append(correct.item() / float(grid.size()[0]))
-
+        
         # backpropagation
         loss.backward()
         optimizer.step()
-        num_samp_tot += grid.shape[0]
-    train_acc = np.mean(mean_correct)
-    train_loss = loss_tot / num_samp_tot
+
+        running_loss += loss.item() * grid.size(0) # sum loss over batch
+        pred_choice = pred.argmax(dim=1)           # get predicted class
+        running_corrects += torch.sum(pred_choice == target).item()       
+        total_samples += grid.shape[0]
+    
+    train_acc = running_corrects / total_samples
+    train_loss = running_loss / total_samples
     return train_acc, train_loss
 
 
@@ -47,7 +50,7 @@ def test_epoch(testDataLoader, model, criterion, device, config):
     model.eval()
 
     # metrics initialization
-    loss_tot = 0.0
+    running_loss = 0.0
     total_samples = 0
     correct_samples = 0
     class_correct = np.zeros(config.shared.num_class)
@@ -59,31 +62,31 @@ def test_epoch(testDataLoader, model, criterion, device, config):
     with torch.no_grad():
         for batch in tqdm(testDataLoader, total=len(testDataLoader), smoothing=0.9):
             # move data to device
-            inputs = batch['data'].to(device)
-            targets = batch['label'].to(device)
+            grid = batch['data'].to(device)
+            target = batch['label'].to(device).long()
 
             # forward pass
-            outputs = model(inputs)
-            loss = criterion(outputs, targets.long())
-            loss_tot += loss.item() * inputs.size(0)
-            total_samples += inputs.size(0)
+            pred = model(grid)
+            loss = criterion(pred, target)
+            running_loss += loss.item() * grid.size(0)
+            total_samples += grid.shape[0]
 
             # predictions
-            _, preds = torch.max(outputs, 1)
-            correct_samples += torch.sum(preds == targets).item()
+            pred_choice = pred.argmax(dim=1)
+            correct_samples += torch.sum(pred_choice == target).item()
 
             # per class accuracy
             for cls in range(config.shared.num_class):
-                cls_mask = (targets == cls)
+                cls_mask = (target == cls)
                 class_total[cls] += cls_mask.sum().item()
-                class_correct[cls] += (preds[cls_mask] == cls).sum().item()
+                class_correct[cls] += (pred_choice[cls_mask] == cls).sum().item()
 
             # store predictions
-            pred_all.extend(preds.cpu().tolist())
-            target_all.extend(targets.cpu().tolist())
+            pred_all.extend(pred_choice.cpu().tolist())
+            target_all.extend(target.cpu().tolist())
         
     # compute final accuracies and losses
-    test_loss = loss_tot / total_samples
+    test_loss = running_loss / total_samples
     test_acc = correct_samples / total_samples
     class_acc = np.mean(class_correct/np.maximum(class_total, 1))  # avoid division by zero
 
@@ -129,6 +132,10 @@ def training(config, log_file, log_root):
     # initialize model
     model, optimizer, scheduler, criterion = initialize_model(config, device, class_weights)
 
+    '''print("Model summary:")
+    summary(model, (2, config.shared.grid_size, config.shared.grid_size, config.shared.grid_size))
+    '''
+
     # loop on epochs
     best_test_acc = 0
     best_test_class_acc = 0
@@ -153,7 +160,7 @@ def training(config, log_file, log_root):
         print("Testing acc : ", test_acc)
         print("Testing class acc : ", class_acc)
         print("Testing loss : ", test_loss)
-        if best_test_acc < test_acc:
+        if test_acc > best_test_acc:
             best_test_acc = test_acc
             best_epoch = epoch
             best_test_class_acc = class_acc
@@ -173,7 +180,7 @@ def training(config, log_file, log_root):
                 'train_loss': train_loss,
             }, log_root + "/model_KDE.tar")
 
-            '''# save preds and create confusion matrix
+            # save preds and create confusion matrix
             conf_mat_data = {
                 'pred': preds,
                 'target': targets,
@@ -183,7 +190,7 @@ def training(config, log_file, log_root):
             
             with open(os.path.join(config.training.ROOT_DIR, 'modeltrees_shape_names.txt'), 'r') as f:
                 SAMPLE_LABELS = f.read().splitlines()
-            show_confusion_matrix(log_root, preds, targets, SAMPLE_LABELS, epoch=best_epoch)'''
+            show_confusion_matrix(log_root, preds, targets, SAMPLE_LABELS, epoch=best_epoch)
 
         # update logs
         with open(log_file, 'a', newline='') as file:
@@ -279,14 +286,11 @@ def initialize_model(config, device, class_weights):
     # load model if needed
     if config.training.load_model:
         checkpoint = torch.load(config.training.model_path, map_location=device)
-        old_weight = checkpoint['model_state_dict']['conv1.weight']
+        old_w = checkpoint['model_state_dict']['conv1.weight']  # (32,1,3,3,3)
+        new_w = torch.cat([old_w, old_w], dim=1)               # (32,2,3,3,3)
+        checkpoint['model_state_dict']['conv1.weight'] = new_w
 
-        # duplicate the existing single channel to have wights for 2 channels
-        new_weight = old_weight.repeat(1, 2, 1, 1, 1) / 2.0  # averaged copy
-        checkpoint['model_state_dict']['conv1.weight'] = new_weight
-
-        # Load model and update its state_dict
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         print("Model loaded from ", config.training.model_path)
         if config.training.resume_optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
