@@ -9,7 +9,7 @@ from packaging import version
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from src.utils import *
-from models.model_og import KDE_cls_model
+from models.model import KDE_cls_model
 from src.csv_creation import preprocess_dataset
 from src.dataset_train_inference import InferenceDataset
 from src.pcd_to_pickle import csv_to_pickles

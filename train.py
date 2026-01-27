@@ -124,49 +124,6 @@ def training(config, log_file, log_root):
     point_cloud_transforms = PointCloudTransforms(config)
     voxel_transforms = VoxelTransforms(config)
 
-    '''kde_transform = ToKDE(config.shared.grid_size, config.shared.kernel_size, config.shared.num_repeat_kernel)
-    data_transform = T.Compose([
-        RandRotate(),
-        #RandScale(kernel_size),
-        # Adding tree crop transform for data augmentation
-        TreeCropTransform(crop_ratio=config.training.crop_ratio, probability=config.training.probability),
-    ])
-    # Optional: creation of pickles from pcd files
-    if config.training.do_update_caching:
-        print("Converting PCD to Pickle for training set...")
-        csv_to_pickles(
-            csvfile=os.path.join(config.training.ROOT_DIR, config.training.TRAIN_FILES),
-            root_dir=config.training.ROOT_DIR,
-            split='train',
-            kde_transform=kde_transform,
-            pickle_subdir='pickles_train'
-        )
-        print("Converting PCD to Pickle for testing set...")
-        csv_to_pickles(
-            csvfile=os.path.join(config.training.ROOT_DIR, config.training.TEST_FILES),
-            root_dir=config.training.ROOT_DIR,
-            split='test',
-            kde_transform=kde_transform,
-            pickle_subdir='pickles_test'
-        )
-        
-    # load datasets 
-    trainDataLoader = makeDataloader(
-                            csvfile = os.path.join(config.training.ROOT_DIR, 'modeltrees_train_pickles.csv'),
-                            pickle_dir = os.path.join(config.training.ROOT_DIR, 'pickles_train'),
-                            transform = data_transform,
-                            batch_size = config.shared.batch_size,
-                            shuffle = True,
-                            num_workers = config.shared.num_workers
-    )
-    testDataLoader = makeDataloader(
-                            csvfile = os.path.join(config.training.ROOT_DIR, 'modeltrees_test_pickles.csv'),
-                            pickle_dir = os.path.join(config.training.ROOT_DIR, 'pickles_test'),
-                            transform = data_transform,
-                            batch_size = config.shared.batch_size,
-                            shuffle = True,
-                            num_workers = config.shared.num_workers
-    )'''
     # loading datasets and creating pickle files
     print("Loading datasets...")
     train_dataset = TrainPCDDataset(

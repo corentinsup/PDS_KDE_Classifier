@@ -5,8 +5,6 @@ import torch.nn as nn
 class KDE_cls_model(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        '''output_channels = cfg['num_class']
-        d_grid = cfg['grid_dim']'''
         
         self.num_classes = cfg["num_class"]
         self.grid_dim = cfg['grid_dim']
@@ -55,20 +53,6 @@ class KDE_cls_model(nn.Module):
         self.bn11 = nn.BatchNorm3d(1024)
         self.conv12 = nn.Conv3d(1024, 1024, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn12 = nn.BatchNorm3d(1024)
-
-        '''# global averaging
-        self.conv13 = nn.Conv3d(1024, output_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn13 = nn.BatchNorm3d(output_channels)
-        self.gap = nn.AvgPool3d(int(d_grid/32))
-
-        # Fully connected layer
-        self.linear1 = nn.Linear(1024, 512, bias=False)
-        self.linear2 = nn.Linear(512, 256, bias=False)
-        self.linear3 = nn.Linear(256, 128, bias=False)
-        self.linear4 = nn.Linear(128, output_channels, bias=False)
-
-        # fully connected layer
-        self.linear = nn.Linear(output_channels, output_channels, bias=False)'''
         
         # classifier conv head
         self.conv13 = nn.Conv3d(1024, self.num_classes, 3, padding=1, bias=False)
@@ -84,15 +68,6 @@ class KDE_cls_model(nn.Module):
         self.fc4 = nn.Linear(128, self.num_classes, bias=False)
 
     def forward(self, x):
-        '''batch_size, grid_dim, _, _ = x.size()
-        x = x.reshape((batch_size, 1, self.grid_dim, self.grid_dim, self.grid_dim)).float()  # B x 1 x N x N x N
-
-        # whitening
-        x = self.conv1(x)  # B x 32 x N x N x N
-        norm = torch.norm(x, dim=1).reshape((batch_size, 1, grid_dim, grid_dim, grid_dim)) + 1e-9  # B x 1 x N x N x N
-        x = x / norm  # B x 32 x N x N x N
-        x = self.relu(x)  # B x 32 x N x N x N
-'''
         B = x.size(0)
 
         # whitening with quantile normalization
