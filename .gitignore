@@ -35,7 +35,10 @@ dist/
 # --------------------
 # Data & results (ML)
 # --------------------
-data/
+data/**
+!data/
+!data/Val_arpette/
+!data/Val_arpette/modeltrees_shape_names.txt
 inference/
 
 # Model / checkpoint files
@@ -48,7 +51,7 @@ inference/
 *.data-00000-of-00001
 
 # Weights
-weights/*
+models/weights/*
 !weights/README.md
 
 # --------------------
