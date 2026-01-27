@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from scipy.stats import multivariate_normal
 import random
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 
 class RandRotate(object):
@@ -16,7 +18,6 @@ class RandRotate(object):
         # Rotate around z axis
         sample['data'] = torch.rot90(sample['data'], num_rot, (1, 2))
         return sample
-
 
 class RandScale(object):
     """ Randomly scale patches of values in sample
@@ -64,7 +65,11 @@ class ToKDE(object):
 
     def __call__(self, sample):
        # Normalize everything together to keep channels aligned
-        all_points = np.concatenate([sample['data_all'], sample['data_cluster']], axis=0)
+       
+        cluster_mask = sample["cluster_mask"]
+        cluster_points = sample['data_all'][cluster_mask]
+
+        all_points = np.concatenate([sample['data_all'], cluster_points], axis=0)
         all_points_normalized = pcNormalize(all_points)
 
         # now split back
@@ -72,25 +77,25 @@ class ToKDE(object):
         pointCloud_cluster = all_points_normalized[len(sample['data_all']):]
 
         # create grid:
-        grid_all = pcToGrid(pointCloud_all, self.grid_size)
-        grid_cluster = pcToGrid(pointCloud_cluster, self.grid_size)
+        grid_all = pcToGrid_vectorized(pointCloud_all, self.grid_size)
+        grid_cluster = pcToGrid_vectorized(pointCloud_cluster, self.grid_size)
 
         # apply KDE:
         for _ in range(self.num_repeat):
             grid_all = applyKDE(grid_all, self.grid_size, self.kernel_size)
             grid_cluster = applyKDE(grid_cluster, self.grid_size, self.kernel_size)
-
-        # normalize grids
+        
+        '''# normalize grids
         grid_all = (grid_all - grid_all.mean()) / (grid_all.std() + 1e-5)
         grid_cluster = (grid_cluster - grid_cluster.mean()) / (grid_cluster.std() + 1e-5)
-
+'''
         # stack channels to have shape 2xGxGxG
         grid = np.stack((grid_all, grid_cluster), axis=0)
 
         # to tensor
         grid = torch.tensor(grid, dtype=torch.float32)
-        label = torch.tensor(sample['label']).long()
-
+        label = torch.tensor(sample['label']).long() 
+        
         return {'data': grid, 'label': label}
 
 
@@ -115,6 +120,23 @@ def pcToGrid(data, grid_size):
 
     return grid
 
+def pcToGrid_vectorized(data, grid_size):
+    """ Create a grid from the point cloud using vectorized operations
+        Input:
+            Nx3 array where N is variable: the pointcloud
+        Output:
+            GxGxG array: the grid to be updated
+    """
+    grid = np.zeros((grid_size, grid_size, grid_size))
+
+    # find position of each point on grid
+    idx = ((data + 1) / 2 * grid_size).astype(int)
+    idx = np.clip(idx, 0, grid_size - 1)
+
+    # add points to grid
+    grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1.0
+
+    return grid
 
 def applyKDE(grid, grid_size, kernel_size):
     """ Create a KDE grid from grid
@@ -189,4 +211,5 @@ def read_pcd_with_fields(filename) :
     fields = fields_line.strip().split()[1:]  # Skip the 'FIELDS' keyword
 
     return data, fields
-    
+
+

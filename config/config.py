@@ -24,6 +24,10 @@ class TrainingConfig:
     weight_decay: float
     do_update_caching: bool
     do_preprocess: bool
+    crop_ratio: float
+    crop_radius: float
+    probability: float
+    n_augmentations: int
     frac_training: float
     frac_testing: float
     load_model: bool
@@ -38,15 +42,13 @@ class TrainingConfig:
 @dataclass
 class InferenceConfig:
     do_preprocess: bool
+    do_update_caching: bool
     verbose: bool
-    chunk_size: int
     src_inf_root: str
     src_inf_data: str
     src_inf_results: str
     src_model: str
     inference_file: str
-    use_class_weighting: bool
-    save_predictions: bool
 
 @dataclass
 class FullConfig:

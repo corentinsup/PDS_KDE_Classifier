@@ -1,217 +1,203 @@
 import os
+import csv
 import pandas as pd
-import shutil
+import torchvision.transforms as T
+import torch
+import time
 
+from packaging import version
 from tqdm import tqdm
-from src.dataset import ModelTreesDataLoader
 from torch.utils.data import DataLoader
 from src.utils import *
 from models.model_og import KDE_cls_model
-from time import time
-from packaging import version
+from src.csv_creation import preprocess_dataset
+from src.dataset_train_inference import InferenceDataset
+from src.pcd_to_pickle import csv_to_pickles
 from config.config import *
 
-
-def inference_by_chunk(config):
-    verbose = config.inference.verbose
-    lst_files = os.listdir(os.path.join(config.inference.src_inf_root, config.inference.src_inf_data))
-
-    if config.inference.chunk_size > 1 and config.inference.chunk_size < len(lst_files):
-        # creates chunks of samples to infer on
-        lst_chunk_of_tiles = [lst_files[x:min(y,len(lst_files))] for x, y in zip(
-            range(0, len(lst_files) - config.inference.chunk_size, config.inference.chunk_size),
-            range(config.inference.chunk_size, len(lst_files), config.inference.chunk_size),
-            )]
-        if lst_chunk_of_tiles[-1][-1] != lst_files[-1]:
-            lst_chunk_of_tiles.append(lst_files[(len(lst_chunk_of_tiles)*config.inference.chunk_size)::])
-        
-        # creates results architecture
-        if os.path.exists(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results)):
-            print('A "results" directory already exists.')
-            answer = None
-            while answer not in ['y', 'yes', 'n', 'no', '']:
-                answer = input("Do you want to overwrite it (y/n)?")
-                if answer.lower() in ['y', 'yes', '']:
-                    shutil.rmtree(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results))
-                elif answer.lower() in ['n', 'no']:
-                    print("Stoping the process..")
-                    quit()
-                else:
-                    print("wrong input.")
-        os.makedirs(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results))
-
-        # modify config for inference
-        base_results = config.inference.src_inf_results
-        base_data = config.inference.src_inf_data
-        # temporarily modify config for inference
-        config.inference.src_inf_data = "temp_chunk_data"
-        config.inference.src_inf_results = "results_temp"
-
-        df_results = pd.DataFrame(columns=['file_name', 'class'])
-        df_failed_samples = pd.DataFrame(columns=['Index', 'data', 'label'])
-        for num_chunk, chunk in tqdm(enumerate(lst_chunk_of_tiles), total=len(lst_chunk_of_tiles), desc="Infering on chunks", smoothing=0.9):
-            if verbose:
-                print(f"=== PROCESSING CHUNK {num_chunk + 1} / {len(lst_chunk_of_tiles)}")
-                
-            # create temp folder for chunks
-            if os.path.exists(os.path.join(config.inference.src_inf_root, 'temp_chunk_data')):
-                shutil.rmtree(os.path.join(config.inference.src_inf_root, 'temp_chunk_data'))
-            os.makedirs(os.path.join(config.inference.src_inf_root, 'temp_chunk_data'))
-
-            # copy chunk of tiles
-            if verbose:
-                print("Copying:")
-            for _, file in tqdm(enumerate(chunk), total=len(chunk), desc="Copying", disable=not verbose):
-                shutil.copyfile(
-                    os.path.join(config.inference.src_inf_root, base_data, file),
-                    os.path.join(config.inference.src_inf_root, config.inference.src_inf_data, file),
-                )
-
-            # call inference
-            inference(config, verbose=False)
-                        
-            # transfert results
-            for r,_,f in os.walk(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results)):
-                for file in f:
-                    if file.endswith('.pcd'):
-                        source_file_path = os.path.join(r, file)
-                        rel_path = os.path.relpath(source_file_path, os.path.join(config.inference.src_inf_root, config.inference.src_inf_results))
-                        target_file_path = os.path.join(config.inference.src_inf_root, base_results, rel_path)
-                        os.makedirs(os.path.dirname(target_file_path), exist_ok=True)
-                        shutil.copyfile(source_file_path, target_file_path)
-                    elif file.endswith('.csv'):
-                        if file == 'failed_data.csv':
-                            df_failed_samples = pd.concat([df_failed_samples, pd.read_csv(os.path.join(r, file), sep=';')], axis=0)
-                            df_failed_samples.to_csv(os.path.join(config.inference.src_inf_root, base_results, 'failed_data.csv'), sep=';', index=False)
-                        elif file == "results.csv":
-                            df_results = pd.concat([df_results, pd.read_csv(os.path.join(r, file), sep=';')], axis=0)
-                            df_results.to_csv(os.path.join(config.inference.src_inf_root, base_results, 'results.csv'), sep=';', index=False)
-                    else:
-                        print("WARNNING: Weird file: ", os.path.join(r, file))
-            
-            # empty temp results
-            shutil.rmtree(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results))
-        # empty temp data
-        shutil.rmtree(os.path.join(config.inference.src_inf_root, 'temp_chunk_data'))
+def inference(config) :
+    ''' Run inference on the dataset specified in the config file. 
+    Args:
+        config: configuration object containing parameters for inference.
+    Returns:
+        None
+    '''
+    # check torch and if cuda is available
+    print("torch version : " + torch.__version__)
+    if not torch.cuda.is_available():
+        print("CUDA NOT AVAILABLE")
+        device = torch.device('cpu')
     else:
-        inference(config)
+        print("Cuda available")
+        device = torch.device('cuda')
 
+    # data transformations
+    kde_transform = ToKDE(
+        config.shared.grid_size, 
+        config.shared.kernel_size, 
+        config.shared.num_repeat_kernel
+        )
+    # Optional: preprocessing of data
+    if config.inference.do_preprocess:
+        print("Preprocessing dataset...")
+        preprocess_dataset(
+            src_root=config.inference.src_inf_root,
+            mode='inference',
+            frac_train=1.0,
+            output_file=None
+        )
+    # Optional: creation of pickles from pcd files
+    if config.inference.do_update_caching:
+        print("Converting PCD to Pickle for inference set...")
+        csv_to_pickles(
+            csvfile=os.path.join(config.inference.src_inf_root, config.inference.inference_file),
+            root_dir=config.inference.src_inf_root,
+            split='inference',
+            kde_transform=kde_transform,
+            pickle_subdir='pickles_inference',
+            verbose=True
+        )
+    
+    # mapping from label index to label name
+    shape_names_path = os.path.join(config.inference.src_inf_root, 'modeltrees_shape_names.txt')
 
-def inference(config, verbose=True):
-    # create the folders for results
-    if os.path.exists(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results)):
-        print('A "results" directory already exists.')
-        answer = None
-        while answer not in ['y', 'yes', 'n', 'no', '']:
-            answer = input("Do you want to overwrite it (y/n)?")
-            if answer.lower() in ['y', 'yes', '']:
-                shutil.rmtree(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results))
-            elif answer.lower() in ['n', 'no']:
-                print("Stoping the process..")
-                quit()
-            else:
-                print("wrong input.")
-    os.makedirs(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results))
+    with open(shape_names_path, 'r') as f:
+        sample_labels = f.read().splitlines()
 
-    # load the model
-    if verbose:
-        print("Loading model...")
+    # store relation between number and class label
+    dict_labels = {idx: cls for idx, cls in enumerate(sample_labels)}
+    print("Class labels mapping:", dict_labels)
+
+    # load model for inference
+    if config.inference.verbose:
+        print("Loading model for inference...")
+    
     conf = {
         "num_class": config.shared.num_class,
         "grid_dim": config.shared.grid_size,
     }
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = KDE_cls_model(conf).to(device)
 
     if version.parse(torch.__version__) >= version.parse("2.1.0"):
         checkpoint = torch.load(config.inference.src_model, weights_only=False)
     else:
         checkpoint = torch.load(config.inference.src_model)
-    # checkpoint = torch.load(SRC_MODEL, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
+
+    pretrained = checkpoint["model_state_dict"]
+    model_dict = model.state_dict()
+    
+    # add randomly initialized weigths
+    # layers to be updated with a fourth class 
+    layers = [
+        "conv13.weight",
+        "bn13.weight",
+        "bn13.bias",
+        "bn13.running_mean",
+        "bn13.running_var",
+        "fc4.weight"
+    ]
+    seed = torch.manual_seed(42)
+    for name, param in list(pretrained.items()):
+        if name == "conv13.weight":
+            old = param
+            C, A, K1, K2, K3 = old.shape
+            new_filter = torch.randn(1, A, K1, K2, K3, device=device) * 0.01
+            pretrained[name] = torch.cat([old, new_filter], dim=0)
+
+        elif name in [
+            "bn13.weight", "bn13.bias",
+            "bn13.running_mean", "bn13.running_var"
+        ]:
+            old = param
+            new_value = torch.zeros(1, device=device)
+            pretrained[name] = torch.cat([old, new_value], dim=0)
+
+        elif name == "fc4.weight":
+            old = param
+            C, D = old.shape
+            new_row = torch.randn(1, D, device=device) * 0.01
+            pretrained[name] = torch.cat([old, new_row], dim=0)
+
+    # Update other weights
+    model_dict.update(pretrained)
+    model.load_state_dict(model_dict, strict=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    shape_names_path = os.path.join(config.inference.src_inf_root, 'modeltrees_shape_names.txt')
+    # create dataLoader for inference set
+    print("Creating dataloader for inference set...")
+    inference_dataset = InferenceDataset(
+        csvfile=os.path.join(config.inference.src_inf_root, "modeltrees_inference_pickles.csv"),
+        pickle_dir=os.path.join(config.inference.src_inf_root, 'pickles_inference')
+    )
 
-    with open(shape_names_path, 'r') as f:
-        sample_labels = f.read().splitlines()
-
-    results_root = os.path.join(config.inference.src_inf_root, config.inference.src_inf_results)
-
-    for cls in sample_labels:
-        os.makedirs(os.path.join(results_root, cls), exist_ok=True)
-
-    # store relation between number and class label
-    dict_labels = {idx: cls for idx, cls in enumerate(sample_labels)}
+    inferenceDataLoader = DataLoader(
+        inference_dataset,
+        batch_size=config.shared.batch_size,
+        shuffle=False,
+        num_workers=config.shared.num_workers,
+        pin_memory=True
+    )
     
-    # preprocess the samples
-    if config.inference.do_preprocess:
-        lst_files_to_process = [os.path.join(config.inference.src_inf_data, cls) for cls in os.listdir(os.path.join(config.inference.src_inf_root, config.inference.src_inf_data)) if cls.endswith('.pcd')]
-        df_files_to_process = pd.DataFrame(lst_files_to_process, columns=['data'])
-        df_files_to_process['label'] = 0
-        df_files_to_process.to_csv(config.inference.src_inf_root + config.inference.inference_file, sep=';', index=False)
+    # load dataframe with file names
+    df_files = pd.read_csv(os.path.join(config.inference.src_inf_root, config.inference.inference_file), delimiter=';')
 
-    # make the predictions
-    if verbose:
-        print("making predictions...")
-    kde_transform = ToKDE(config.shared.grid_size, config.shared.kernel_size, config.shared.num_repeat_kernel)
-    inferenceSet = ModelTreesDataLoader(config.inference.inference_file, config.inference.src_inf_root, split='inference', transform=None, do_update_caching=config.inference.do_preprocess, kde_transform=kde_transform, result_dir=config.inference.src_inf_results, verbose=verbose)
-    if len(inferenceSet.num_fails) > 0:
-        os.makedirs(os.path.join(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results), 'failures/'), exist_ok=True)
-        for _, file_src in inferenceSet.num_fails:
-            shutil.copyfile(
-                src=file_src, 
-                dst=os.path.join(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results), 'failures/', os.path.basename(file_src)))
+    # Inference loop
+    all_predictions = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(inferenceDataLoader, smoothing=0.9, desc="Classifying", disable=not config.inference.verbose)):
+            grid = batch['data'].to(device)
+        
+            pred = model(grid)
+            pred = torch.nn.functional.softmax(pred, dim=1)
+            pred_class = pred.argmax(dim=1)
 
-    inferenceDataLoader = DataLoader(inferenceSet, batch_size=config.shared.batch_size, shuffle=False, num_workers=config.shared.num_workers, pin_memory=True)
-    df_predictions = pd.DataFrame(columns=["file_name", "class"])
+            batch_start = batch_idx * config.shared.batch_size
 
-    for _, data in tqdm(enumerate(inferenceDataLoader, 0), total=len(inferenceDataLoader), smoothing=0.9, desc="Classifying", disable=not verbose):
-        # load the samples and labels on cuda
-        grid, target, filenames = data['grid'], data['label'], data['filename']
-        grid, target = grid.to(device), target.to(device)
+            # process each sample
+            for i, pred_val in enumerate(pred_class.tolist()):
 
-        # compute prediction
-        pred = model(grid)
-        pred_choice = pred.data.max(1)[1]
+                row = df_files.iloc[batch_start + i]
+                # remove ".pickle" → get original pcd filename
+                #original_filename = row["data"].replace(".pickle", "")
+                original_filename = row["data"]
+                # record prediction
+                all_predictions.append([original_filename, pred_val])
 
-        # copy samples into right result folder
-        for idx, pred in enumerate(pred_choice):
-            fn = os.path.basename(filenames[idx].replace('.pickle', ''))
-            shutil.copyfile(
-                os.path.join(config.inference.src_inf_root, config.inference.src_inf_data, fn),
-                os.path.join(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results), dict_labels[pred.item()], fn),
-                )
-            df_predictions.loc[len(df_predictions)] = [os.path.join(config.inference.src_inf_data, fn), pred.item()]
+    # --- Save Result CSV ---
+    out_path = os.path.join(config.inference.src_inf_results, "results.csv")
+    pd.DataFrame(all_predictions, columns=["file_name", "class_id"]).to_csv(out_path, sep=";", index=False)
 
-    # save results in csv file
-    df_predictions.to_csv(os.path.join(os.path.join(config.inference.src_inf_root, config.inference.src_inf_results), 'results.csv'), sep=';', index=False)
-
-    # clean temp
-    inferenceSet.clean_temp()
+    print("\nInference completed.")
 
 
 def main(config):
-    # measure time
+    # create results directory
+    version = 0
+    results_dir = os.path.join(config.inference.src_inf_root, config.inference.src_inf_results)
+    while os.path.exists(results_dir + f'_{version}'):
+        version += 1
+    results_dir = results_dir + f'_{version}'
+    os.makedirs(results_dir, exist_ok=True)
+    config.inference.src_inf_results = results_dir
+    print(f"Results will be saved to: {results_dir}")
+    
+    # run inference
     start = time.time()
-    # start inference
-    inference_by_chunk(config)
+    inference(config)
     end_time = time.time()
 
     # print duration
     duration = end_time - start
-    n_hours = int(delta_time / 3600)
-    n_min = int((delta_time % 3600) / 60)
-    n_sec = int(delta_time - n_hours * 3600 - n_min * 60)
+    n_hours = int(duration / 3600)
+    n_min = int((duration % 3600) / 60)
+    n_sec = int(duration - n_hours * 3600 - n_min * 60)
     print("\n==============\n")
     print(f"TIME FOR IMFERENCE: {n_hours}:{n_min}:{n_sec}")
 
 
 if __name__ == "__main__":
-    
     parser = get_config_parser()
     args = parser.parse_args()
     config = load_config(args.config, args.override)
     main(config)
-
-    

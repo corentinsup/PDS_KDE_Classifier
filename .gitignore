@@ -1,10 +1,61 @@
+# --------------------
+# Python
+# --------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# --------------------
+# Virtual environments
+# --------------------
 .venv/
+venv/
+env/
+
+# --------------------
+# Packaging / build
+# --------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --------------------
+# Jupyter
+# --------------------
+.ipynb_checkpoints/
+
+# --------------------
+# Logs & caches
+# --------------------
+*.log
+.cache/
+
+# --------------------
+# Data & results (ML)
+# --------------------
 data/
-data_models/
 inference/
-Point
-results/
-*.data-00000-of-00001
+
+# Model / checkpoint files
 *.pth
+*.pt
 *.tar
-*.pyc
+*.ckpt
+*.h5
+*.onnx
+*.data-00000-of-00001
+
+# Weights
+weights/*
+!weights/README.md
+
+# --------------------
+# OS / editor noise
+# --------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
